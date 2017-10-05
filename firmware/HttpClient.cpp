@@ -1,165 +1,237 @@
 #include "HttpClient.h"
+#define LOGGING
 
-static const uint16_t DEFAULT_TIMEOUT = 5000; // Allow maximum 5s between data packets.
+/*
+ *  constructor
+ */
+HttpClient::HttpClient() {}
 
-/**
-* Constructor.
-*/
-HttpClient::HttpClient()
-{
+/*
+ *  send header with char* value
+ */
+void HttpClient::sendHeader(const char* key, const char* val) {
+    #ifdef LOGGING
+    Serial.printf("sending header: '%s: %s'\n", key, val);
+    #endif
 
-}
-
-/**
-* Method to send a header, should only be called from within the class.
-*/
-void HttpClient::sendHeader(const char* aHeaderName, const char* aHeaderValue)
-{
-    client.print(aHeaderName);
+    client.print(key);
     client.print(": ");
-    client.println(aHeaderValue);
-
-    #ifdef LOGGING
-    Serial.print(aHeaderName);
-    Serial.print(": ");
-    Serial.println(aHeaderValue);
-    #endif
+    client.print(val);
+    client.print(CRLF);
 }
 
-void HttpClient::sendHeader(const char* aHeaderName, const int aHeaderValue)
-{
-    client.print(aHeaderName);
+/*
+ *  send header with int value
+ */
+void HttpClient::sendHeader(const char* key, const int val) {
+    #ifdef LOGGING
+    Serial.printf("sending header: '%s: %d'\n", key, val);
+    #endif
+
+    client.print(key);
     client.print(": ");
-    client.println(aHeaderValue);
-
-    #ifdef LOGGING
-    Serial.print(aHeaderName);
-    Serial.print(": ");
-    Serial.println(aHeaderValue);
-    #endif
+    client.print(val);
+    client.print(CRLF);
 }
 
-void HttpClient::sendHeader(const char* aHeaderName)
-{
-    client.println(aHeaderName);
-
+// clear response buffer in case it is reused
+void HttpClient::clear_response(http_response_t &response) {
     #ifdef LOGGING
-    Serial.println(aHeaderName);
+    Serial.printf("clearing headers\n");
     #endif
-}
-
-/**
-* Method to send an HTTP Request. Allocate variables in your application code
-* in the aResponse struct and set the headers and the options in the aRequest
-* struct.
-*/
-void HttpClient::request(http_request_t &aRequest, http_response_t &aResponse, http_header_t headers[], const char* aHttpMethod)
-{
-    // If a proper response code isn't received it will be set to -1.
-    aResponse.status = -1;
-
-    // NOTE: The default port tertiary statement is unpredictable if the request structure is not initialised
-    // http_request_t request = {0} or memset(&request, 0, sizeof(http_request_t)) should be used
-    // to ensure all fields are zero
-    bool connected = false;
-    if(aRequest.hostname!=NULL) {
-        connected = client.connect(aRequest.hostname.c_str(), (aRequest.port) ? aRequest.port : 80 );
-    }   else {
-        connected = client.connect(aRequest.ip, aRequest.port);
+    int i;
+    for (i=0; i < response.max_headers; i++) {
+        response.headers[i].key = NULL;
+        response.headers[i].val = NULL;
     }
-
     #ifdef LOGGING
-    if (connected) {
-        if(aRequest.hostname!=NULL) {
-            Serial.print("HttpClient>\tConnecting to: ");
-            Serial.print(aRequest.hostname);
-        } else {
-            Serial.print("HttpClient>\tConnecting to IP: ");
-            Serial.print(aRequest.ip);
+    Serial.printf("clearing response buffer\n");
+    #endif
+    memset(response.buffer, 0, sizeof(response.max_buffer_size));
+    response.version = NULL;
+    response.status  = 0;
+    response.reason  = NULL;
+    response.body    = NULL;
+    #ifdef LOGGING
+    Serial.printf("done clearing response\n");
+    #endif
+}
+
+int HttpClient::parse_response(http_response_t &response) {
+    #ifdef LOGGING
+    Serial.println("parsing response...");
+    #endif
+
+    if (strlen(response.buffer) >= HTTP_VERSION_LEN+HTTP_STATUS_CODE_LEN+1) {
+        char *header_end;
+        char *str, *tmp;
+        char *line, *key, *val;
+        int content_len = 0;
+
+        int i;
+        char *crlf = CRLF CRLF;
+        // find header_end to know when to stop parsing headers (and start parsing body)
+        for (i=0; i<2; i++) { // try twice in case server use "\n\n"
+            tmp = strstr(response.buffer, crlf);
+            if (tmp && strlen(tmp) > strlen(crlf)) {
+                header_end = tmp;
+                break;
+            }
+            crlf = LF LF;
         }
-        Serial.print(":");
-        Serial.println(aRequest.port);
-    } else {
-        Serial.println("HttpClient>\tConnection failed.");
+
+        // parse status line
+        str = strtok_r(response.buffer, " ", &tmp);
+        if (str)
+            response.version = str;
+        str = strtok_r(NULL, " ", &tmp);
+        if (str)
+            response.status = atoi(str);
+        str = strtok_r(NULL, CRLF, &tmp);
+        if (str)
+        response.reason = str;
+
+        #ifdef LOGGING
+        Serial.printf("got status line: %s %d %s\n", response.version, response.status, response.reason);
+        #endif
+
+        // parse headers
+        i = 0;
+        while ((line = strtok_r(NULL, CRLF, &tmp)) != NULL && i < response.max_headers) {
+            key = strtok(line, ":");
+            val = strtok(NULL, CRLF);
+
+            if (!key || !val) // skip empty keys or vals
+                continue;
+
+            response.headers[i].key = key;
+            response.headers[i].val = val;
+
+            if (strcasecmp(key, "Content-Length") == 0)
+                content_len = atoi(val);
+
+            if (*(response.headers[i].val) == ' ')
+                response.headers[i].val++;
+
+            #ifdef LOGGING
+            Serial.printf("got header: %s: %s\n", response.headers[i].key, response.headers[i].val);
+            #endif
+
+            if (header_end && *header_end == '\0') // end of headers, stop
+                break;
+
+            i++;
+        }
+
+        // parse body
+        if (header_end) {
+            response.body = header_end+strlen(crlf);
+            *(response.body+content_len) = '\0';
+
+            #ifdef LOGGING
+            Serial.printf("got body: %s\n", response.body);
+            #endif
+        }
+
+        #ifdef LOGGING
+        Serial.println("parsing response suceeded!");
+        #endif
+
+        return 0;
     }
+
+    #ifdef LOGGING
+    Serial.println("parsing response failed!");
+    #endif
+
+    return -1;
+}
+
+/*
+ *  send request
+ */
+void HttpClient::request(http_request_t &request, http_response_t &response, http_header_t headers[], const char* method) {
+    response.status = -1;
+    bool connected = false;
+    if (!request.hostname)
+        return;
+
+    #ifdef LOGGING
+    Serial.printf("connecting to: '%s:%d'...\n", request.hostname, request.port);
+    #endif
+
+    int port = (request.port) ? request.port : 80;
+    connected = client.connect(request.hostname, port);
+
+    #ifdef LOGGING
+    if (connected)
+        Serial.println("connected!");
+    else
+        Serial.println("connection failed!");
     #endif
 
     if (!connected) {
         client.stop();
-        // If TCP Client can't connect to host, exit here.
         return;
     }
 
-    //
-    // Send HTTP Headers
-    //
-
-    // Send initial headers (only HTTP 1.0 is supported for now).
-    client.print(aHttpMethod);
-    client.print(" ");
-    client.print(aRequest.path);
-    client.print(" HTTP/1.0\r\n");
-
+    // send status line
     #ifdef LOGGING
-    Serial.println("HttpClient>\tStart of HTTP Request.");
-    Serial.print(aHttpMethod);
-    Serial.print(" ");
-    Serial.print(aRequest.path);
-    Serial.print(" HTTP/1.0\r\n");
+    Serial.printf("sending: '%s %s HTTP/1.0'\n", method, request.path);
     #endif
 
-    // Send General and Request Headers.
-    sendHeader("Connection", "close"); // Not supporting keep-alive for now.
-    if(aRequest.hostname!=NULL) {
-        sendHeader("HOST", aRequest.hostname.c_str());
-    }
+    client.print(method);
+    client.print(" ");
+    client.print(request.path);
+    client.print(" HTTP/1.0" CRLF);
 
-    //Send Entity Headers
-    // TODO: Check the standard, currently sending Content-Length : 0 for empty
-    // POST requests, and no content-length for other types.
-    if (aRequest.body != NULL) {
-        sendHeader("Content-Length", (aRequest.body).length());
-    } else if (strcmp(aHttpMethod, HTTP_METHOD_POST) == 0) { //Check to see if its a Post method.
+    // send headers
+    sendHeader("Connection", "close"); // not supporting keep-alive for now
+    // Host: <hostname>:<port>
+    #ifdef LOGGING
+    Serial.printf("sending header: 'Host: %s:%d'\n", request.hostname, port);
+    #endif
+    client.print("Host"); client.print(": ");
+    client.print(request.hostname); client.print(":"); client.print(port);
+    client.print(CRLF);
+
+    // TODO: is content-length a valid header for non-POST request?
+    if (request.body) {
+        sendHeader("Content-Length", (strlen(request.body)));
+    } else if (strcmp(method, HTTP_METHOD_POST) == 0) { //Check to see if its a Post method.
         sendHeader("Content-Length", 0);
     }
 
-    if (headers != NULL)
-    {
+    if (headers) {
         int i = 0;
-        while (headers[i].header != NULL)
-        {
-            if (headers[i].value != NULL) {
-                sendHeader(headers[i].header, headers[i].value);
-            } else {
-                sendHeader(headers[i].header);
-            }
+        while (headers[i].key) {
+            if (headers[i].val)
+                sendHeader(headers[i].key, headers[i].val);
             i++;
         }
     }
 
-    // Empty line to finish headers
-    client.println();
+    #ifdef LOGGING
+    Serial.printf("done sending headers, sending final CRLF\n");
+    #endif
+
+    client.print(CRLF); // last CRLF
     client.flush();
 
-    //
-    // Send HTTP Request Body
-    //
-
-    if (aRequest.body != NULL) {
-        client.println(aRequest.body);
-
+    if (request.body) {
         #ifdef LOGGING
-        Serial.println(aRequest.body);
+        Serial.printf("sending body: '%s'\n", request.body);
         #endif
+
+        client.print(request.body);
     }
 
     #ifdef LOGGING
-    Serial.println("HttpClient>\tEnd of HTTP Request.");
+    Serial.printf("body sent, clearing response\n");
     #endif
 
     // clear response buffer
-    memset(&buffer[0], 0, sizeof(buffer));
-
+    clear_response(response);
 
     //
     // Receive HTTP Response
@@ -171,23 +243,17 @@ void HttpClient::request(http_request_t &aRequest, http_response_t &aResponse, h
     // The loop exits when the connection is closed, or if there is a
     // timeout or an error.
 
-    unsigned int bufferPosition = 0;
+    int i = 0;
     unsigned long lastRead = millis();
     unsigned long firstRead = millis();
     bool error = false;
     bool timeout = false;
-    uint16_t actualTimeout = aRequest.timeout == 0 ? DEFAULT_TIMEOUT : aRequest.timeout;
-    char lastChar = 0;
-    bool inHeaders = true;
 
     do {
         #ifdef LOGGING
         int bytes = client.available();
-        if(bytes) {
-            Serial.print("\r\nHttpClient>\tReceiving TCP transaction of ");
-            Serial.print(bytes);
-            Serial.println(" bytes.");
-        }
+        if (bytes)
+            Serial.printf("receiving %d bytes\n", bytes);
         #endif
 
         while (client.available()) {
@@ -201,86 +267,44 @@ void HttpClient::request(http_request_t &aRequest, http_response_t &aResponse, h
                 error = true;
 
                 #ifdef LOGGING
-                Serial.println("HttpClient>\tError: No data available.");
+                Serial.println("error: No data available");
                 #endif
 
                 break;
             }
 
-            if (inHeaders) {
-                if ((c == '\n') && (lastChar == '\n')) {
-                    // End of headers.  Grab the status code and reset the buffer.
-                    aResponse.status = atoi(&buffer[9]);
-
-                    memset(&buffer[0], 0, sizeof(buffer));
-                    bufferPosition = 0;
-                    inHeaders = false;
-                    #ifdef LOGGING
-                    Serial.print("\r\nHttpClient>\tEnd of HTTP Headers (");
-                    Serial.print(aResponse.status);
-                    Serial.println(")");
-                    #endif
-                    continue;
-                } else if (c != '\r') {
-                    lastChar = c;
-                }
-            }
-
             // Check that received character fits in buffer before storing.
-            if (bufferPosition < sizeof(buffer)-1) {
-                buffer[bufferPosition] = c;
-            } else if ((bufferPosition == sizeof(buffer)-1)) {
-                buffer[bufferPosition] = '\0'; // Null-terminate buffer
+            if (i < response.max_buffer_size-1) {
+                response.buffer[i] = c;
+            } else if (i == response.max_buffer_size-1) {
+                response.buffer[i] = '\0'; // terminate
                 client.stop();
                 error = true;
 
                 #ifdef LOGGING
-                Serial.println("\r\nHttpClient>\tError: Response body larger than buffer.");
+                Serial.println("error: response body larger than buffer");
                 #endif
-                break;
             }
-            bufferPosition++;
+            i++;
         }
-        // We don't need to null terminate the buffer since it was zeroed to start with, or null terminated when it reached capacity.
+        response.buffer[i] = '\0'; // terminate
 
-        #ifdef LOGGING
-        if (bytes) {
-            Serial.print("\r\nHttpClient>\tEnd of TCP transaction.");
-        }
-        #endif
-
-        // Check that there hasn't been more than 5s since last read.
-        timeout = millis() - lastRead > actualTimeout;
+        timeout = millis() - lastRead > TIMEOUT;
 
         // Unless there has been an error or timeout wait 200ms to allow server
         // to respond or close connection.
         if (!error && !timeout) {
-            delay(200);
+            delay(SERVER_RESPOND_WAIT);
         }
     } while (client.connected() && !timeout && !error);
 
     #ifdef LOGGING
     if (timeout) {
-        Serial.println("\r\nHttpClient>\tError: Timeout while reading response.");
+        Serial.println("error: timeout while reading response");
     }
-    Serial.print("\r\nHttpClient>\tEnd of HTTP Response (");
-    Serial.print(millis() - firstRead);
-    Serial.println("ms).");
+    Serial.printf("\ntime to recieve response: %dms\n", millis()-firstRead);
     #endif
     client.stop();
 
-    #ifdef LOGGING
-    Serial.print("HttpClient>\tStatus Code: ");
-    Serial.println(aResponse.status);
-    #endif
-
-    if (inHeaders) {
-        #ifdef LOGGING
-        Serial.println("HttpClient>\tError: Can't find HTTP response body.");
-        #endif
-
-        return;
-    }
-    // Return the entire message body from bodyPos+4 till end.
-    aResponse.body = buffer;
+    parse_response(response);
 }

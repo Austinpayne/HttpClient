@@ -6,125 +6,122 @@
 #include "spark_wiring_tcpclient.h"
 #include "spark_wiring_usbserial.h"
 
-/**
- * Defines for the HTTP methods.
- */
-static const char* HTTP_METHOD_GET    = "GET";
-static const char* HTTP_METHOD_POST   = "POST";
-static const char* HTTP_METHOD_PUT    = "PUT";
-static const char* HTTP_METHOD_DELETE = "DELETE";
-static const char* HTTP_METHOD_PATCH = "PATCH";
+#define HTTP_METHOD_GET    "GET"
+#define HTTP_METHOD_POST   "POST"
+#define HTTP_METHOD_PUT    "PUT"
+#define HTTP_METHOD_DELETE "DELETE"
+#define HTTP_METHOD_PATCH  "PATCH"
 
-/**
- * This struct is used to pass additional HTTP headers such as API-keys.
- * Normally you pass this as an array. The last entry must have NULL as key.
- */
-typedef struct
-{
-  const char* header;
-  const char* value;
+#define SERVER_RESPOND_WAIT 200 // ms to wait for server to respond
+#define TIMEOUT 5000 // ms
+#define CRLF "\r\n"
+#define LF   "\n"
+#define HTTP_VERSION_LEN 8
+#define HTTP_STATUS_CODE_LEN 3
+
+// http_header arrays are null terminated
+// when making a request
+typedef struct http_header {
+    char *key;
+    char *val;
 } http_header_t;
 
-/**
- * HTTP Request struct.
- * hostname request host
- * path	 request path
- * port     request port
- * body	 request body
- */
-typedef struct
-{
-  String hostname;
-  IPAddress ip;
-  String path;
-  // TODO: Look at setting the port by default.
-  //int port = 80;
-  int port;
-  String body;
-  uint16_t timeout;
+typedef struct http_request {
+    char *hostname;
+    int  port;
+    char *path;
+    char *body;
 } http_request_t;
 
-/**
- * HTTP Response struct.
- * status  response status code.
- * body	response body
- */
-typedef struct
-{
-  int status;
-  String body;
+// buffer is used to store entire response (headers+body)
+// after request, it should not be touched as version, reason,
+// body, and header keys, vals reference char* contained in
+// the buffer
+typedef struct http_response {
+    char *buffer;
+    int  max_buffer_size;
+    http_header_t *headers;
+    int  max_headers;
+    char *version;
+    int  status;
+    char *reason;
+    char *body;
 } http_response_t;
 
 class HttpClient {
 public:
-    /**
-    * Public references to variables.
-    */
     TCPClient client;
-    char buffer[1024];
 
-    /**
-    * Constructor.
-    */
+    // constructor
     HttpClient(void);
 
-    /**
-    * HTTP request methods.
-    * Can't use 'delete' as name since it's a C++ keyword.
-    */
-    void get(http_request_t &aRequest, http_response_t &aResponse)
-    {
-        request(aRequest, aResponse, (http_header_t*)NULL, HTTP_METHOD_GET);
+    // 2xx
+    int ok(int status) {
+        return status_between(status, 200, 300);
     }
 
-    void post(http_request_t &aRequest, http_response_t &aResponse)
-    {
-        request(aRequest, aResponse, (http_header_t*)NULL, HTTP_METHOD_POST);
+    // 3xx
+    int redirect(int status) {
+        return status_between(status, 300, 400);
     }
 
-    void put(http_request_t &aRequest, http_response_t &aResponse)
-    {
-        request(aRequest, aResponse, (http_header_t*)NULL, HTTP_METHOD_PUT);
+    // 4xx
+    int client_error(int status) {
+        return status_between(status, 400, 500);
     }
 
-    void del(http_request_t &aRequest, http_response_t &aResponse)
-    {
-        request(aRequest, aResponse, (http_header_t*)NULL, HTTP_METHOD_DELETE);
+    // 5xx
+    int server_error(int status) {
+        return status_between(status, 500, 600);
     }
 
-    void get(http_request_t &aRequest, http_response_t &aResponse, http_header_t headers[])
-    {
-        request(aRequest, aResponse, headers, HTTP_METHOD_GET);
+    void get(http_request_t &req, http_response_t &res) {
+        request(req, res, NULL, HTTP_METHOD_GET);
     }
 
-    void post(http_request_t &aRequest, http_response_t &aResponse, http_header_t headers[])
-    {
-        request(aRequest, aResponse, headers, HTTP_METHOD_POST);
+    void post(http_request_t &req, http_response_t &res) {
+        request(req, res, NULL, HTTP_METHOD_POST);
     }
 
-    void put(http_request_t &aRequest, http_response_t &aResponse, http_header_t headers[])
-    {
-        request(aRequest, aResponse, headers, HTTP_METHOD_PUT);
+    void put(http_request_t &req, http_response_t &res) {
+        request(req, res, NULL, HTTP_METHOD_PUT);
     }
 
-    void del(http_request_t &aRequest, http_response_t &aResponse, http_header_t headers[])
-    {
-        request(aRequest, aResponse, headers, HTTP_METHOD_DELETE);
+    void del(http_request_t &req, http_response_t &res) {
+        request(req, res, NULL, HTTP_METHOD_DELETE);
     }
-	
-    void patch(http_request_t &aRequest, http_response_t &aResponse, http_header_t headers[])
-    {
-        request(aRequest, aResponse, headers, HTTP_METHOD_PATCH);
+
+    void get(http_request_t &req, http_response_t &res, http_header_t headers[]) {
+        request(req, res, headers, HTTP_METHOD_GET);
+    }
+
+    void post(http_request_t &req, http_response_t &res, http_header_t headers[]) {
+        request(req, res, headers, HTTP_METHOD_POST);
+    }
+
+    void put(http_request_t &req, http_response_t &res, http_header_t headers[]) {
+        request(req, res, headers, HTTP_METHOD_PUT);
+    }
+
+    void del(http_request_t &req, http_response_t &res, http_header_t headers[]) {
+        request(req, res, headers, HTTP_METHOD_DELETE);
+    }
+
+    void patch(http_request_t &req, http_response_t &res, http_header_t headers[]) {
+        request(req, res, headers, HTTP_METHOD_PATCH);
     }
 
 private:
-    /**
-    * Underlying HTTP methods.
-    */
-    void request(http_request_t &aRequest, http_response_t &aResponse, http_header_t headers[], const char* aHttpMethod);
-    void sendHeader(const char* aHeaderName, const char* aHeaderValue);
-    void sendHeader(const char* aHeaderName, const int aHeaderValue);
-    void sendHeader(const char* aHeaderName);
+    void request(http_request_t &request, http_response_t &response, http_header_t headers[], const char* method);
+    void sendHeader(const char* key, const char* val);
+    void sendHeader(const char* key, const int val);
+    void clear_response(http_response_t &response);
+    int parse_response(http_response_t &response);
+    int status_between(int status, int low, int high) {
+        if (status >= low && status < high)
+            return 1;
+        return 0;
+    }
 };
 
 #endif /* __HTTP_CLIENT_H_ */
