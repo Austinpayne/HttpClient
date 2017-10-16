@@ -1,5 +1,4 @@
 #include "HttpClient.h"
-#define LOGGING
 
 /*
  *  constructor
