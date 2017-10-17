@@ -79,6 +79,12 @@ int HttpClient::parse_response(http_response_t &response) {
             crlf = LF LF;
         }
 
+        // find content-length no matter what in case headers are not parsed
+        #define CLEN "Content-Length:"
+        tmp = strcasestr(response->buffer, CLEN);
+        if (tmp)
+            content_len = atoi(tmp+strlen(CLEN));
+
         // parse status line
         str = strtok_r(response.buffer, " ", &tmp);
         if (str)
@@ -105,9 +111,6 @@ int HttpClient::parse_response(http_response_t &response) {
 
             response.headers[i].key = key;
             response.headers[i].val = val;
-
-            if (strcasecmp(key, "Content-Length") == 0)
-                content_len = atoi(val);
 
             if (*(response.headers[i].val) == ' ')
                 response.headers[i].val++;
